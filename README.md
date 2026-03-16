@@ -1,5 +1,8 @@
 # @rvncom/socket-bun-engine
 
+[![npm version](https://img.shields.io/npm/v/@rvncom/socket-bun-engine.svg)](https://www.npmjs.com/package/@rvncom/socket-bun-engine)
+[![npm downloads](https://img.shields.io/npm/dm/@rvncom/socket-bun-engine.svg)](https://www.npmjs.com/package/@rvncom/socket-bun-engine)
+
 Engine.IO server implementation for the Bun runtime. Provides native WebSocket and HTTP long-polling transports for [Socket.IO](https://socket.io/).
 
 Fork of `@socket.io/bun-engine` with bug fixes, improved API, and active maintenance.
@@ -7,13 +10,13 @@ Fork of `@socket.io/bun-engine` with bug fixes, improved API, and active mainten
 ## Installation
 
 ```bash
-bun add @rvn/bun-engine
+bun add @rvncom/socket-bun-engine
 ```
 
 ## Usage
 
 ```ts
-import { Server as Engine } from "@rvn/bun-engine";
+import { Server as Engine } from "@rvncom/socket-bun-engine";
 import { Server } from "socket.io";
 
 const engine = new Engine({

@@ -1,6 +1,6 @@
 {
   "name": "@rvncom/socket-bun-engine",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Engine.IO server implementation for Bun runtime",
   "type": "module",
   "main": "./dist/index.js",
@@ -32,5 +32,10 @@
   "peerDependencies": {
     "typescript": "^5"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://github.com/rvncom/socket-bun-engine#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rvncom/socket-bun-engine.git"
+  }
 }

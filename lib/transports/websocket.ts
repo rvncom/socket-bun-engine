@@ -22,13 +22,21 @@ export class WS extends Transport {
   }
 
   public send(packets: Packet[]) {
-    for (const packet of packets) {
-      const data = Parser.encodePacket(packet, true);
-      if (this.writable && this.socket?.readyState === WebSocket.OPEN) {
-        // TODO use ws.cork() once https://github.com/oven-sh/bun/issues/21588 is resolved
-        this.socket.send(data);
-      }
+    if (!this.writable || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
     }
+
+    if (packets.length === 1) {
+      this.socket.send(Parser.encodePacket(packets[0]!, true));
+      return;
+    }
+
+    // Batch multiple packets into a single syscall via cork()
+    this.socket.cork(() => {
+      for (const packet of packets) {
+        this.socket!.send(Parser.encodePacket(packet, true));
+      }
+    });
   }
 
   protected doClose() {

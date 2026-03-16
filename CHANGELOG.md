@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.1
+
+### Performance
+
+- **WebSocket cork()**: Multiple packets are now batched into a single syscall via `ws.cork()` instead of individual sends
+- **URL parsing**: `handleRequest()` accepts an optional pre-parsed `URL` to avoid double parsing when used via `handler()`
+
+### New Features
+
+- **`server.close()` returns Promise**: Resolves when all clients have disconnected — enables graceful shutdown
+- **`server.sockets` iterator**: Iterate over all connected Socket instances
+- **`server.getSocket(id)`**: Look up a specific socket by session ID
+- **Export `Socket` and `CloseReason`**: Now available from the package entry point
+
+### CI/CD
+
+- **GitHub Actions**: Added `ci.yml` — runs lint, test, compile on push/PR to main
+- **GitHub Actions**: Added `publish.yml` — automated NPM publish on `v*` tag push
+
 ## 1.0.0 — Fork from `@socket.io/bun-engine` v0.1.0
 
 ### Bug Fixes

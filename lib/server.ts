@@ -149,8 +149,9 @@ export class Server extends EventEmitter<
   public async handleRequest(
     req: Request,
     server: Bun.Server<WebSocketData>,
+    _url?: URL,
   ): Promise<Response> {
-    const url = new URL(req.url);
+    const url = _url ?? new URL(req.url);
 
     debug(`handling ${req.method} ${req.url}`);
 
@@ -422,11 +423,39 @@ export class Server extends EventEmitter<
   }
 
   /**
-   * Closes all clients.
+   * Returns an iterator over all connected sockets.
    */
-  public close() {
+  public get sockets(): IterableIterator<Socket> {
+    return this.clients.values();
+  }
+
+  /**
+   * Returns the socket with the given id, if any.
+   */
+  public getSocket(id: string): Socket | undefined {
+    return this.clients.get(id);
+  }
+
+  /**
+   * Closes all clients and returns a Promise that resolves when all are closed.
+   */
+  public close(): Promise<void> {
     debug("closing all open clients");
-    this.clients.forEach((client) => client.close());
+    if (this.clients.size === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let remaining = this.clients.size;
+      const onClose = () => {
+        if (--remaining === 0) {
+          resolve();
+        }
+      };
+      this.clients.forEach((client) => {
+        client.once("close", onClose);
+        client.close();
+      });
+    });
   }
 
   /**
@@ -469,7 +498,7 @@ export class Server extends EventEmitter<
         const url = new URL(req.url);
 
         if (url.pathname === this.opts.path) {
-          return this.handleRequest(req, server);
+          return this.handleRequest(req, server, url);
         } else {
           return new Response(null, { status: 404 });
         }
