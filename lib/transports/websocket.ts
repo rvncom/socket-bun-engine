@@ -22,21 +22,38 @@ export class WS extends Transport {
   }
 
   public send(packets: Packet[]) {
-    if (!this.writable || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (
+      !this.writable ||
+      !this.socket ||
+      this.socket.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    // Backpressure: pause if send buffer is overloaded
+    const threshold = this.opts.backpressureThreshold;
+    if (threshold > 0 && this.socket.getBufferedAmount() > threshold) {
+      debug("backpressure: send buffer exceeded threshold, pausing writes");
+      this.writable = false;
       return;
     }
 
     if (packets.length === 1) {
       this.socket.send(Parser.encodePacket(packets[0]!, true));
-      return;
+    } else {
+      // Batch multiple packets into a single syscall via cork()
+      this.socket.cork(() => {
+        for (const packet of packets) {
+          this.socket!.send(Parser.encodePacket(packet, true));
+        }
+      });
     }
 
-    // Batch multiple packets into a single syscall via cork()
-    this.socket.cork(() => {
-      for (const packet of packets) {
-        this.socket!.send(Parser.encodePacket(packet, true));
-      }
-    });
+    // Check backpressure after send
+    if (threshold > 0 && this.socket.getBufferedAmount() > threshold) {
+      debug("backpressure: buffer full after send, pausing writes");
+      this.writable = false;
+    }
   }
 
   protected doClose() {
@@ -51,6 +68,17 @@ export class WS extends Transport {
 
   public onMessage(message: RawData) {
     debug("on message");
+
+    // Resume writes if backpressure cleared (client consuming data)
+    if (!this.writable && this.socket) {
+      const threshold = this.opts.backpressureThreshold;
+      if (threshold > 0 && this.socket.getBufferedAmount() <= threshold) {
+        debug("backpressure: buffer drained, resuming writes");
+        this.writable = true;
+        this.emitReserved("drain");
+      }
+    }
+
     this.onPacket(Parser.decodePacket(message));
   }
 

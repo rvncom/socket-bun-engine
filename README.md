@@ -96,6 +96,12 @@ Default: `0` (unlimited)
 
 Maximum number of concurrent clients. New connections are rejected with HTTP 503 when the limit is reached.
 
+### `backpressureThreshold`
+
+Default: `1048576` (1 MB)
+
+WebSocket send buffer threshold in bytes. When `getBufferedAmount()` exceeds this value, writes are paused automatically and resumed when the buffer drains. Set to `0` to disable.
+
 ### `allowRequest`
 
 A function that receives the handshake/upgrade request and can reject it:
@@ -145,6 +151,56 @@ const engine = new Engine({
   },
 });
 ```
+
+## Metrics
+
+Built-in server metrics with zero dependencies:
+
+```ts
+const snapshot = engine.metrics;
+// {
+//   connections: 150,        // total opened (cumulative)
+//   disconnections: 12,      // total closed
+//   activeConnections: 138,  // currently connected
+//   upgrades: 130,           // polling → websocket
+//   bytesReceived: 524288,
+//   bytesSent: 1048576,
+//   errors: 2,
+//   avgRtt: 14               // average round-trip time (ms)
+// }
+```
+
+Per-socket RTT is also available:
+
+```ts
+engine.on("connection", (socket) => {
+  socket.on("heartbeat", () => {
+    console.log(`RTT: ${socket.rtt}ms`);
+  });
+});
+```
+
+## API
+
+### `server.clientsCount`
+
+Number of currently connected clients.
+
+### `server.metrics`
+
+Returns a `MetricsSnapshot` object with server-wide counters.
+
+### `server.sockets`
+
+Iterator over all connected `Socket` instances.
+
+### `server.getSocket(id)`
+
+Look up a specific socket by session ID.
+
+### `server.close()`
+
+Returns a `Promise<void>` that resolves when all clients have disconnected.
 
 ## License
 

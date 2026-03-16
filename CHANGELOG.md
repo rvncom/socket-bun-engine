@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.2
+
+### New Features
+
+- **Built-in server metrics**: `server.metrics` returns a snapshot with connections, disconnections, activeConnections, upgrades, bytesReceived, bytesSent, errors, and avgRtt
+- **Socket RTT measurement**: `socket.rtt` tracks round-trip time from ping/pong cycles (ms)
+- **WebSocket backpressure**: Automatically pauses writes when `getBufferedAmount()` exceeds `backpressureThreshold`, resumes on drain
+- **`backpressureThreshold` option**: Configurable send buffer limit (default 1MB, set 0 to disable)
+- **Export `MetricsSnapshot`**: Type available from package entry point
+
+### Dependencies
+
+- Updated `@types/bun` to 1.3.10, `prettier` to 3.8.1, `socket.io` to 4.8.3, `typescript` peer to ^5.9.2
+
 ## 1.0.1
 
 ### Performance

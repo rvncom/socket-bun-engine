@@ -61,6 +61,8 @@ export class Socket extends EventEmitter<
    */
   private pingIntervalTimer?: Timer;
   private pingTimeoutTimer?: Timer;
+  private _pingSentAt = 0;
+  public rtt = 0;
 
   constructor(
     id: string,
@@ -124,6 +126,11 @@ export class Socket extends EventEmitter<
       case "pong":
         debug("got pong");
 
+        if (this._pingSentAt > 0) {
+          this.rtt = Date.now() - this._pingSentAt;
+          this._pingSentAt = 0;
+        }
+
         clearTimeout(this.pingTimeoutTimer);
         this.schedulePing();
 
@@ -167,6 +174,7 @@ export class Socket extends EventEmitter<
       debug(
         `writing ping packet - expecting pong within ${this.opts.pingTimeout} ms`,
       );
+      this._pingSentAt = Date.now();
       this.sendPacket("ping");
       this.resetPingTimeout();
     }, this.opts.pingInterval);

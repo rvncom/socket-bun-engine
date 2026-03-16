@@ -10,6 +10,7 @@ import { addCorsHeaders, type CorsOptions } from "./cors";
 import { Transport } from "./transport";
 import { generateId } from "./util";
 import type { RawData } from "./parser";
+import { ServerMetrics, type MetricsSnapshot } from "./metrics";
 import { debuglog } from "node:util";
 
 const debug = debuglog("engine.io");
@@ -47,6 +48,11 @@ export interface ServerOptions {
    * @default 0
    */
   maxClients: number;
+  /**
+   * WebSocket send buffer threshold in bytes for backpressure. Set to 0 to disable.
+   * @default 1048576 (1 MB)
+   */
+  backpressureThreshold: number;
   /**
    * A function that receives a given handshake or upgrade request as its first parameter,
    * and can decide whether to continue or not.
@@ -119,9 +125,17 @@ export class Server extends EventEmitter<
   public readonly opts: ServerOptions;
 
   private clients: Map<string, Socket> = new Map();
+  private _metrics = new ServerMetrics();
 
   public get clientsCount(): number {
     return this.clients.size;
+  }
+
+  /**
+   * Returns a snapshot of server metrics.
+   */
+  public get metrics(): MetricsSnapshot {
+    return this._metrics.snapshot();
   }
 
   constructor(opts: Partial<ServerOptions> = {}) {
@@ -135,6 +149,7 @@ export class Server extends EventEmitter<
         upgradeTimeout: 10000,
         maxHttpBufferSize: 1e6,
         maxClients: 0,
+        backpressureThreshold: 1_048_576,
       },
       opts,
     );
@@ -176,6 +191,7 @@ export class Server extends EventEmitter<
         context: Record<string, unknown>;
       };
       const message = ERROR_MESSAGES.get(code)!;
+      this._metrics.onError();
       this.emitReserved("connection_error", {
         req,
         code,
@@ -404,10 +420,40 @@ export class Server extends EventEmitter<
     });
 
     this.clients.set(id, socket);
+    this._metrics.onConnection();
+
+    socket.on("data", (data) => {
+      this._metrics.onBytesReceived(
+        typeof data === "string"
+          ? data.length
+          : (data as unknown as { byteLength: number }).byteLength,
+      );
+    });
+
+    socket.on("packetCreate", (packet) => {
+      if (packet.data != null) {
+        this._metrics.onBytesSent(
+          typeof packet.data === "string"
+            ? packet.data.length
+            : (packet.data as unknown as { byteLength: number }).byteLength,
+        );
+      }
+    });
+
+    socket.on("heartbeat", () => {
+      if (socket.rtt > 0) {
+        this._metrics.onRtt(socket.rtt);
+      }
+    });
+
+    socket.on("upgrade", () => {
+      this._metrics.onUpgrade();
+    });
 
     socket.once("close", (reason) => {
       debug(`socket ${id} closed due to ${reason}`);
       this.clients.delete(id);
+      this._metrics.onDisconnection();
     });
 
     if (isUpgrade) {
