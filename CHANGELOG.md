@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.3
+
+### Bug Fixes
+
+- **Packet loss during backpressure**: Removed pre-send backpressure early return in `WS.send()` — packets dequeued by `flush()` are no longer silently dropped when backpressure is detected mid-send. Post-send backpressure check still pauses future flushes.
+
+### New Features
+
+- **Rate limiting**: Per-socket message rate limiting via `rateLimit` option (`{ maxMessages, windowMs }`). Dropped messages emit `rateLimited` event on the socket.
+- **Graceful degradation**: `degradationThreshold` option (0–1 fraction of `maxClients`). When exceeded, new polling connections are rejected (WS only) and ping interval is doubled for new connections. Server emits `degradation` event on state change.
+- **Broadcast**: `server.broadcast(data)` and `server.broadcastExcept(excludeId, data)` methods for sending messages to all connected sockets.
+- **Export `RateLimitOptions` and `DegradationEvent`**: Types available from package entry point.
+
+### Cleanup
+
+- **Parser**: Removed unused `BinaryType` type and `_binaryType`/`binaryType` parameters from `decodePacket` and `decodePayload`
+
+### CI/CD
+
+- **Trusted Publishing**: Publish workflow uses NPM OIDC provenance (no `NODE_AUTH_TOKEN` secret required)
+
 ## 1.0.2
 
 ### New Features

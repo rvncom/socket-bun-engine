@@ -11,6 +11,7 @@ import { Transport } from "./transport";
 import { generateId } from "./util";
 import type { RawData } from "./parser";
 import { ServerMetrics, type MetricsSnapshot } from "./metrics";
+import { type RateLimitOptions } from "./rate-limiter";
 import { debuglog } from "node:util";
 
 const debug = debuglog("engine.io");
@@ -54,6 +55,16 @@ export interface ServerOptions {
    */
   backpressureThreshold: number;
   /**
+   * Per-socket message rate limiting. Disabled by default.
+   */
+  rateLimit?: RateLimitOptions;
+  /**
+   * Fraction (0–1) of maxClients at which graceful degradation activates.
+   * Requires maxClients > 0. Set to 0 to disable (default).
+   * @default 0
+   */
+  degradationThreshold: number;
+  /**
    * A function that receives a given handshake or upgrade request as its first parameter,
    * and can decide whether to continue or not.
    */
@@ -90,6 +101,11 @@ interface ConnectionError {
   context: Record<string, unknown>;
 }
 
+export interface DegradationEvent {
+  active: boolean;
+  clients: number;
+}
+
 interface ServerReservedEvents {
   connection: (
     socket: Socket,
@@ -97,6 +113,7 @@ interface ServerReservedEvents {
     server: Bun.Server<WebSocketData>,
   ) => void;
   connection_error: (err: ConnectionError) => void;
+  degradation: (event: DegradationEvent) => void;
 }
 
 const enum ERROR_CODES {
@@ -126,6 +143,7 @@ export class Server extends EventEmitter<
 
   private clients: Map<string, Socket> = new Map();
   private _metrics = new ServerMetrics();
+  private _degraded = false;
 
   public get clientsCount(): number {
     return this.clients.size;
@@ -150,6 +168,7 @@ export class Server extends EventEmitter<
         maxHttpBufferSize: 1e6,
         maxClients: 0,
         backpressureThreshold: 1_048_576,
+        degradationThreshold: 0,
       },
       opts,
     );
@@ -385,11 +404,34 @@ export class Server extends EventEmitter<
 
     const id = generateId();
 
+    // Graceful degradation check
+    const degraded = this.isDegraded();
+    this.updateDegradationState(degraded);
+
     if (this.opts.editHandshakeHeaders) {
       await this.opts.editHandshakeHeaders(responseHeaders, req, server);
     }
 
     let isUpgrade = req.headers.has("upgrade");
+
+    // Under degradation, reject new polling connections (WebSocket only)
+    if (degraded && !isUpgrade) {
+      this.emitReserved("connection_error", {
+        req,
+        code: ERROR_CODES.FORBIDDEN,
+        message: "Degraded mode: only WebSocket connections accepted",
+        context: { degraded: true },
+      });
+      responseHeaders.set("Content-Type", "application/json");
+      return new Response(
+        JSON.stringify({
+          code: ERROR_CODES.FORBIDDEN,
+          message: "Degraded mode: only WebSocket connections accepted",
+        }),
+        { status: 503, headers: responseHeaders },
+      );
+    }
+
     let transport: Transport;
     if (isUpgrade) {
       transport = new WS(this.opts);
@@ -410,7 +452,11 @@ export class Server extends EventEmitter<
 
     debug(`new socket ${id}`);
 
-    const socket = new Socket(id, this.opts, transport, {
+    const socketOpts = degraded
+      ? { ...this.opts, pingInterval: this.opts.pingInterval * 2 }
+      : this.opts;
+
+    const socket = new Socket(id, socketOpts, transport, {
       url: req.url,
       headers: Object.fromEntries(req.headers.entries()),
       _query: Object.fromEntries(url.searchParams.entries()),
@@ -454,6 +500,7 @@ export class Server extends EventEmitter<
       debug(`socket ${id} closed due to ${reason}`);
       this.clients.delete(id);
       this._metrics.onDisconnection();
+      this.updateDegradationState(this.isDegraded());
     });
 
     if (isUpgrade) {
@@ -480,6 +527,49 @@ export class Server extends EventEmitter<
    */
   public getSocket(id: string): Socket | undefined {
     return this.clients.get(id);
+  }
+
+  /**
+   * Returns whether the server is currently in degraded mode.
+   */
+  public get degraded(): boolean {
+    return this._degraded;
+  }
+
+  /**
+   * Sends a message to all connected sockets.
+   */
+  public broadcast(data: RawData): void {
+    for (const socket of this.clients.values()) {
+      socket.write(data);
+    }
+  }
+
+  /**
+   * Sends a message to all connected sockets except the one with the given id.
+   */
+  public broadcastExcept(excludeId: string, data: RawData): void {
+    for (const [id, socket] of this.clients) {
+      if (id !== excludeId) {
+        socket.write(data);
+      }
+    }
+  }
+
+  private isDegraded(): boolean {
+    const { degradationThreshold, maxClients } = this.opts;
+    if (degradationThreshold <= 0 || maxClients <= 0) return false;
+    return this.clients.size / maxClients >= degradationThreshold;
+  }
+
+  private updateDegradationState(degraded: boolean) {
+    if (degraded !== this._degraded) {
+      this._degraded = degraded;
+      this.emitReserved("degradation", {
+        active: degraded,
+        clients: this.clients.size,
+      });
+    }
   }
 
   /**

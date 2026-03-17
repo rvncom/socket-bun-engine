@@ -4,8 +4,9 @@ import {
   type BunWebSocket,
   type WebSocketData,
   type RawData,
+  type DegradationEvent,
 } from "../lib";
-import { createWebSocket, waitFor, sleep } from "./util";
+import { createWebSocket, waitFor, waitForPackets, sleep } from "./util";
 
 const URL = "http://localhost:3000";
 const WS_URL = URL.replace("http", "ws");
@@ -507,6 +508,210 @@ describe("Engine.IO protocol", () => {
 
         await waitFor(socket, "close");
       });
+    });
+  });
+
+  describe("rate limiting", () => {
+    it("drops messages when rate limit is exceeded", async () => {
+      const engine = new Server({
+        pingInterval: 300,
+        pingTimeout: 200,
+        rateLimit: { maxMessages: 3, windowMs: 5000 },
+      });
+
+      const received: string[] = [];
+      let rateLimitedCount = 0;
+
+      engine.on("connection", (socket) => {
+        socket.on("data", (data: RawData) => {
+          received.push(data as string);
+          socket.write(data);
+        });
+        socket.on("rateLimited", () => {
+          rateLimitedCount++;
+        });
+      });
+
+      const server = Bun.serve({
+        port: 3010,
+        ...engine.handler(),
+      });
+
+      try {
+        const socket = createWebSocket(
+          "ws://localhost:3010/engine.io/?EIO=4&transport=websocket",
+        );
+
+        await waitFor(socket, "message"); // handshake
+
+        // Send 5 messages — first 3 should pass, last 2 should be dropped
+        for (let i = 0; i < 5; i++) {
+          socket.send(`4msg${i}`);
+        }
+
+        // Collect replies (should only get 3)
+        const packets = await waitForPackets(socket, 3);
+
+        expect(packets).toEqual(["4msg0", "4msg1", "4msg2"]);
+        expect(rateLimitedCount).toBe(2);
+
+        socket.close();
+      } finally {
+        await engine.close();
+        server.stop(true);
+      }
+    });
+  });
+
+  describe("broadcast", () => {
+    it("broadcasts a message to all connected sockets", async () => {
+      const engine = new Server({
+        pingInterval: 5000,
+        pingTimeout: 4000,
+      });
+
+      engine.on("connection", (socket) => {
+        socket.on("data", (data: RawData) => {
+          if (data === "broadcast") {
+            engine.broadcast("hello all");
+          }
+        });
+      });
+
+      const server = Bun.serve({
+        port: 3011,
+        ...engine.handler(),
+      });
+
+      try {
+        const socket1 = createWebSocket(
+          "ws://localhost:3011/engine.io/?EIO=4&transport=websocket",
+        );
+        const socket2 = createWebSocket(
+          "ws://localhost:3011/engine.io/?EIO=4&transport=websocket",
+        );
+
+        await waitFor(socket1, "message"); // handshake
+        await waitFor(socket2, "message"); // handshake
+
+        // Trigger broadcast from socket1
+        socket1.send("4broadcast");
+
+        // Both should receive the broadcast
+        const p1 = waitForPackets(socket1, 1);
+        const p2 = waitForPackets(socket2, 1);
+
+        const [packets1, packets2] = await Promise.all([p1, p2]);
+
+        expect(packets1[0]).toEqual("4hello all");
+        expect(packets2[0]).toEqual("4hello all");
+
+        socket1.close();
+        socket2.close();
+      } finally {
+        await engine.close();
+        server.stop(true);
+      }
+    });
+
+    it("broadcastExcept excludes the specified socket", async () => {
+      const engine = new Server({
+        pingInterval: 5000,
+        pingTimeout: 4000,
+      });
+
+      const socketIds: string[] = [];
+      engine.on("connection", (socket) => {
+        socketIds.push(socket.id);
+        socket.on("data", (data: RawData) => {
+          // When socket1 sends "trigger", broadcast to everyone except socket1
+          if (data === "trigger") {
+            engine.broadcastExcept(socket.id, "only for others");
+          }
+        });
+      });
+
+      const server = Bun.serve({
+        port: 3012,
+        ...engine.handler(),
+      });
+
+      try {
+        const socket1 = createWebSocket(
+          "ws://localhost:3012/engine.io/?EIO=4&transport=websocket",
+        );
+        const socket2 = createWebSocket(
+          "ws://localhost:3012/engine.io/?EIO=4&transport=websocket",
+        );
+
+        await waitFor(socket1, "message"); // handshake
+        await waitFor(socket2, "message"); // handshake
+
+        // Socket1 triggers broadcast
+        socket1.send("4trigger");
+
+        // Socket2 should receive the broadcast
+        const packets = await waitForPackets(socket2, 1);
+        expect(packets[0]).toEqual("4only for others");
+
+        socket1.close();
+        socket2.close();
+      } finally {
+        await engine.close();
+        server.stop(true);
+      }
+    });
+  });
+
+  describe("graceful degradation", () => {
+    it("rejects polling connections when degraded", async () => {
+      const engine = new Server({
+        pingInterval: 5000,
+        pingTimeout: 4000,
+        maxClients: 2,
+        degradationThreshold: 0.5, // degrade at 1+ clients (50% of 2)
+      });
+
+      const degradationEvents: DegradationEvent[] = [];
+      engine.on("degradation", (evt) => degradationEvents.push(evt));
+      engine.on("connection", () => {});
+
+      const server = Bun.serve({
+        port: 3013,
+        ...engine.handler(),
+      });
+
+      try {
+        // First connection via WS — puts us at 1/2 = 50%, triggers degradation
+        const socket1 = createWebSocket(
+          "ws://localhost:3013/engine.io/?EIO=4&transport=websocket",
+        );
+        await waitFor(socket1, "message"); // handshake
+
+        await sleep(10);
+
+        // Now try polling — should be rejected with 503
+        const response = await fetch(
+          "http://localhost:3013/engine.io/?EIO=4&transport=polling",
+        );
+        expect(response.status).toEqual(503);
+
+        // WS should still work
+        const socket2 = createWebSocket(
+          "ws://localhost:3013/engine.io/?EIO=4&transport=websocket",
+        );
+        const { data } = await waitFor(socket2, "message");
+        expect(data).toStartWith("0"); // handshake packet
+
+        expect(degradationEvents.length).toBeGreaterThanOrEqual(1);
+        expect(degradationEvents[0]!.active).toBe(true);
+
+        socket1.close();
+        socket2.close();
+      } finally {
+        await engine.close();
+        server.stop(true);
+      }
     });
   });
 

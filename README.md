@@ -1,7 +1,8 @@
 # @rvncom/socket-bun-engine
 
-[![npm version](https://img.shields.io/npm/v/@rvncom/socket-bun-engine.svg)](https://www.npmjs.com/package/@rvncom/socket-bun-engine)
+[![npm version](https://img.shields.io/npm/v/@rvncom/socket-bun-engine?style=flat-square&color=blue&label=version)](https://www.npmjs.com/package/@rvncom/socket-bun-engine)
 [![npm downloads](https://img.shields.io/npm/dm/@rvncom/socket-bun-engine.svg)](https://www.npmjs.com/package/@rvncom/socket-bun-engine)
+[![license](https://img.shields.io/npm/l/@rvncom/socket-bun-engine?style=flat-square&color=orange)](https://github.com/rvncom/socket-bun-engine/blob/main/LICENSE)
 
 Engine.IO server implementation for the Bun runtime. Provides native WebSocket and HTTP long-polling transports for [Socket.IO](https://socket.io/).
 
@@ -102,6 +103,44 @@ Default: `1048576` (1 MB)
 
 WebSocket send buffer threshold in bytes. When `getBufferedAmount()` exceeds this value, writes are paused automatically and resumed when the buffer drains. Set to `0` to disable.
 
+### `rateLimit`
+
+Per-socket message rate limiting. Disabled by default.
+
+```ts
+const engine = new Engine({
+  rateLimit: {
+    maxMessages: 100,   // max messages per window
+    windowMs: 1000,     // window duration in ms
+  },
+});
+
+engine.on("connection", (socket) => {
+  socket.on("rateLimited", () => {
+    console.log(`Socket ${socket.id} rate limited`);
+  });
+});
+```
+
+### `degradationThreshold`
+
+Default: `0` (disabled)
+
+Fraction (0–1) of `maxClients` at which graceful degradation activates. Requires `maxClients > 0`. When active:
+- New polling connections are rejected (WebSocket only, returns 503)
+- New connections get doubled `pingInterval` to reduce heartbeat overhead
+
+```ts
+const engine = new Engine({
+  maxClients: 10000,
+  degradationThreshold: 0.8, // degrade at 8000+ clients
+});
+
+engine.on("degradation", ({ active, clients }) => {
+  console.log(`Degradation ${active ? "ON" : "OFF"} at ${clients} clients`);
+});
+```
+
 ### `allowRequest`
 
 A function that receives the handshake/upgrade request and can reject it:
@@ -197,6 +236,18 @@ Iterator over all connected `Socket` instances.
 ### `server.getSocket(id)`
 
 Look up a specific socket by session ID.
+
+### `server.broadcast(data)`
+
+Sends a message to all connected sockets.
+
+### `server.broadcastExcept(excludeId, data)`
+
+Sends a message to all connected sockets except the one with the given id.
+
+### `server.degraded`
+
+Returns `true` if the server is currently in degraded mode.
 
 ### `server.close()`
 

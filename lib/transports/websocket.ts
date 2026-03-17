@@ -30,13 +30,7 @@ export class WS extends Transport {
       return;
     }
 
-    // Backpressure: pause if send buffer is overloaded
     const threshold = this.opts.backpressureThreshold;
-    if (threshold > 0 && this.socket.getBufferedAmount() > threshold) {
-      debug("backpressure: send buffer exceeded threshold, pausing writes");
-      this.writable = false;
-      return;
-    }
 
     if (packets.length === 1) {
       this.socket.send(Parser.encodePacket(packets[0]!, true));

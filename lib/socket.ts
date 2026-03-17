@@ -2,6 +2,7 @@ import { EventEmitter } from "./event-emitter";
 import { type Packet, type PacketType, type RawData } from "./parser";
 import { Transport, TransportError } from "./transport";
 import { type ServerOptions } from "./server";
+import { RateLimiter } from "./rate-limiter";
 import { debuglog } from "node:util";
 
 const debug = debuglog("engine.io:socket");
@@ -39,6 +40,7 @@ interface SocketEvents {
   upgrading: (transport: Transport) => void;
   upgrade: (transport: Transport) => void;
   close: (reason: CloseReason) => void;
+  rateLimited: () => void;
 }
 
 const FAST_UPGRADE_INTERVAL_MS = 100;
@@ -62,6 +64,7 @@ export class Socket extends EventEmitter<
   private pingIntervalTimer?: Timer;
   private pingTimeoutTimer?: Timer;
   private _pingSentAt = 0;
+  private rateLimiter?: RateLimiter;
   public rtt = 0;
 
   constructor(
@@ -79,6 +82,10 @@ export class Socket extends EventEmitter<
     this.bindTransport(transport);
 
     this.request = req;
+
+    if (opts.rateLimit) {
+      this.rateLimiter = new RateLimiter(opts.rateLimit);
+    }
 
     this.onOpen();
   }
@@ -138,6 +145,11 @@ export class Socket extends EventEmitter<
         break;
 
       case "message":
+        if (this.rateLimiter && !this.rateLimiter.consume()) {
+          debug("message dropped: rate limited");
+          this.emitReserved("rateLimited");
+          break;
+        }
         this.emitReserved("data", packet.data!);
         break;
 

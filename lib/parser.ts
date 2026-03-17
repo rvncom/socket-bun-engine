@@ -37,8 +37,6 @@ const PACKET_TYPES_REVERSE = new Map<string, PacketType>();
 
 const ERROR_PACKET: Packet = { type: "error", data: "parser error" };
 
-type BinaryType = "arraybuffer" | "blob";
-
 export const Parser = {
   encodePacket({ type, data }: Packet, supportsBinary: boolean): RawData {
     if (Buffer.isBuffer(data)) {
@@ -48,7 +46,7 @@ export const Parser = {
     }
   },
 
-  decodePacket(encodedPacket: RawData, _binaryType?: BinaryType): Packet {
+  decodePacket(encodedPacket: RawData): Packet {
     if (typeof encodedPacket !== "string") {
       return {
         type: "message",
@@ -87,11 +85,11 @@ export const Parser = {
     return encodedPackets.join(SEPARATOR);
   },
 
-  decodePayload(encodedPayload: string, binaryType?: BinaryType): Packet[] {
+  decodePayload(encodedPayload: string): Packet[] {
     const encodedPackets = encodedPayload.split(SEPARATOR);
     const packets = [];
     for (let i = 0; i < encodedPackets.length; i++) {
-      const decodedPacket = this.decodePacket(encodedPackets[i]!, binaryType);
+      const decodedPacket = this.decodePacket(encodedPackets[i]!);
       packets.push(decodedPacket);
       if (decodedPacket.type === "error") {
         break;
