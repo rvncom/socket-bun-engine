@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.6
+
+### Performance
+
+- **Amortized backpressure check**: `getBufferedAmount()` FFI call now runs every 32 sends instead of every send (97% reduction in FFI crossings). Uses bitmask counter `(++count & 31) === 0` in a shared `_checkAndApplyBackpressure()` method across `send()`, `sendMessage()`, and `sendRaw()`.
+- **Cached `instanceof WS` check**: `write()` and `schedulePing()` no longer walk the prototype chain on every call — transport type is cached as `_wsTransport` in `bindTransport()`.
+
+### Bug Fixes
+
+- **Fix silent message loss on `sendMessage` failure**: `Socket.write()` now checks the return value of `WS.sendMessage()`. If it returns `false` (e.g. socket closed mid-send), the message falls through to the buffered `sendPacket()` path instead of being silently dropped.
+
 ## 1.0.5
 
 ### New Features

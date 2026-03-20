@@ -13,6 +13,7 @@ export type BunWebSocket = Bun.ServerWebSocket<WebSocketData>;
 export class WS extends Transport {
   private socket?: BunWebSocket;
   private readonly _checkBackpressure: boolean;
+  private _sendCount = 0;
 
   /**
    * Fast-path callback for message packets (type "4").
@@ -31,6 +32,21 @@ export class WS extends Transport {
 
   public get upgradesTo(): string[] {
     return [];
+  }
+
+  /**
+   * Amortized backpressure check — only calls getBufferedAmount() every 32 sends
+   * instead of every send (97% reduction in FFI crossings).
+   */
+  private _checkAndApplyBackpressure() {
+    if (
+      this._checkBackpressure &&
+      (++this._sendCount & 31) === 0 &&
+      this.socket!.getBufferedAmount() > this.opts.backpressureThreshold
+    ) {
+      debug("backpressure: buffer full, pausing writes");
+      this.writable = false;
+    }
   }
 
   public send(packets: Packet[]) {
@@ -53,14 +69,7 @@ export class WS extends Transport {
       });
     }
 
-    // Check backpressure after send (skip entirely when disabled)
-    if (
-      this._checkBackpressure &&
-      this.socket.getBufferedAmount() > this.opts.backpressureThreshold
-    ) {
-      debug("backpressure: buffer full after send, pausing writes");
-      this.writable = false;
-    }
+    this._checkAndApplyBackpressure();
   }
 
   /**
@@ -79,13 +88,7 @@ export class WS extends Transport {
 
     this.socket.send(typeof data === "string" ? "4" + data : data);
 
-    if (
-      this._checkBackpressure &&
-      this.socket.getBufferedAmount() > this.opts.backpressureThreshold
-    ) {
-      debug("backpressure: buffer full after sendMessage, pausing writes");
-      this.writable = false;
-    }
+    this._checkAndApplyBackpressure();
 
     return true;
   }
@@ -105,13 +108,7 @@ export class WS extends Transport {
 
     this.socket.send(encoded);
 
-    if (
-      this._checkBackpressure &&
-      this.socket.getBufferedAmount() > this.opts.backpressureThreshold
-    ) {
-      debug("backpressure: buffer full after sendRaw, pausing writes");
-      this.writable = false;
-    }
+    this._checkAndApplyBackpressure();
   }
 
   protected doClose() {
@@ -122,6 +119,7 @@ export class WS extends Transport {
     debug("on open");
     this.socket = socket;
     this.writable = true;
+    this._sendCount = 0;
   }
 
   public onMessage(message: RawData) {

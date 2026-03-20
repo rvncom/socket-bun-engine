@@ -72,6 +72,8 @@ export class Socket extends EventEmitter<
   public rtt = 0;
   /** Set to true when packetCreate listeners are attached (e.g. metrics). */
   public _hasPacketCreateListener = false;
+  /** Cached WS transport reference — avoids instanceof check on every write(). */
+  private _wsTransport: WS | null = null;
 
   constructor(
     id: string,
@@ -205,8 +207,8 @@ export class Socket extends EventEmitter<
       );
       this._pingSentAt = Date.now();
       // Fast path: send pre-encoded ping directly on WS transport
-      if (this.transport instanceof WS && this.transport.writable) {
-        this.transport.sendRaw(ENCODED_PING);
+      if (this._wsTransport && this._wsTransport.writable) {
+        this._wsTransport.sendRaw(ENCODED_PING);
       } else {
         this.sendPacket("ping");
       }
@@ -234,14 +236,15 @@ export class Socket extends EventEmitter<
    */
   private bindTransport(transport: Transport) {
     this.transport = transport;
+    this._wsTransport = transport instanceof WS ? transport : null;
     this.transport.once("error", (err) => this.onError(err));
     this.transport.on("packet", (packet) => this.onPacket(packet));
     this.transport.on("drain", () => this.flush());
     this.transport.on("close", () => this.onClose("transport close"));
 
     // Wire fast-path callback for WS message packets
-    if (transport instanceof WS) {
-      transport._onMessageFast = (data) => {
+    if (this._wsTransport) {
+      this._wsTransport._onMessageFast = (data) => {
         if (this.readyState !== "open") return;
         if (this.rateLimiter && !this.rateLimiter.consume()) {
           debug("message dropped: rate limited");
@@ -357,14 +360,15 @@ export class Socket extends EventEmitter<
       return this;
     }
     // Fast path: direct send when transport is writable, buffer is empty, and no packetCreate listeners
+    const wst = this._wsTransport;
     if (
+      wst !== null &&
       !this._hasPacketCreateListener &&
-      this.transport.writable &&
-      this.writeBuffer.length === 0 &&
-      this.transport instanceof WS
+      wst.writable &&
+      this.writeBuffer.length === 0
     ) {
-      this.transport.sendMessage(data);
-      return this;
+      if (wst.sendMessage(data)) return this;
+      // sendMessage returned false (e.g. socket closed mid-send) — fall through to buffered path
     }
     this.sendPacket("message", data);
     return this;
