@@ -606,10 +606,14 @@ export class Server extends EventEmitter<
       );
     }
 
-    const remoteIp =
-      this.opts.maxHandshakesPerIp > 0
-        ? server.requestIP(req)?.address
-        : undefined;
+    let remoteIp: string | undefined;
+    if (this.opts.maxHandshakesPerIp > 0) {
+      try {
+        remoteIp = server.requestIP(req)?.address;
+      } catch {
+        remoteIp = undefined;
+      }
+    }
     if (remoteIp) {
       const ipCount = this._ipHandshakeCounts.get(remoteIp) ?? 0;
       if (ipCount >= this.opts.maxHandshakesPerIp) {
@@ -682,6 +686,14 @@ export class Server extends EventEmitter<
       );
     }
 
+    // Capture remote IP BEFORE server.upgrade() consumes the request
+    let remoteAddress: string | undefined;
+    try {
+      remoteAddress = server.requestIP(req)?.address;
+    } catch {
+      remoteAddress = undefined;
+    }
+
     let transport: Transport;
     if (isUpgrade) {
       transport = new WS(this.opts);
@@ -718,8 +730,6 @@ export class Server extends EventEmitter<
         return h;
       },
     };
-
-    const remoteAddress = server.requestIP(req)?.address;
     const socket = new Socket(
       id,
       socketOpts,
