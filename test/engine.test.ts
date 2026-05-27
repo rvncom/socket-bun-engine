@@ -533,13 +533,13 @@ describe("Engine.IO protocol", () => {
       });
 
       const server = Bun.serve({
-        port: 3010,
+        port: 3015,
         ...engine.handler(),
       });
 
       try {
         const socket = createWebSocket(
-          "ws://localhost:3010/engine.io/?EIO=4&transport=websocket",
+          "ws://localhost:3015/engine.io/?EIO=4&transport=websocket",
         );
 
         await waitFor(socket, "message"); // handshake
@@ -579,16 +579,16 @@ describe("Engine.IO protocol", () => {
       });
 
       const server = Bun.serve({
-        port: 3011,
+        port: 3016,
         ...engine.handler(),
       });
 
       try {
         const socket1 = createWebSocket(
-          "ws://localhost:3011/engine.io/?EIO=4&transport=websocket",
+          "ws://localhost:3016/engine.io/?EIO=4&transport=websocket",
         );
         const socket2 = createWebSocket(
-          "ws://localhost:3011/engine.io/?EIO=4&transport=websocket",
+          "ws://localhost:3016/engine.io/?EIO=4&transport=websocket",
         );
 
         await waitFor(socket1, "message"); // handshake
