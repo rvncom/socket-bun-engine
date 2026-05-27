@@ -11,19 +11,50 @@ export interface RateLimitOptions {
 
 /**
  * Timer-based rate limiter — no Date.now() on the hot path.
- * A periodic timer resets the token counter every windowMs.
+ *
+ * All limiters share a single tick driven by a 100ms global interval.
+ * Each limiter holds its own remaining budget and resets when its window expires.
+ * This avoids one setInterval per socket — at 10k connections that's 10k fewer timers.
  */
+const TICK_MS = 25;
+const activeLimiters = new Set<RateLimiter>();
+let sharedTimer: Timer | undefined;
+
+function startSharedTimer() {
+  if (sharedTimer) return;
+  sharedTimer = setInterval(() => {
+    const now = Date.now();
+    for (const limiter of activeLimiters) {
+      if (now >= limiter._nextReset) {
+        limiter.remaining = limiter._maxMessages;
+        limiter._nextReset = now + limiter._windowMs;
+      }
+    }
+  }, TICK_MS);
+  // Allow process to exit even if limiters are still registered (test/cleanup safety).
+  sharedTimer.unref?.();
+}
+
+function stopSharedTimerIfEmpty() {
+  if (activeLimiters.size === 0 && sharedTimer) {
+    clearInterval(sharedTimer);
+    sharedTimer = undefined;
+  }
+}
+
 export class RateLimiter {
-  private remaining: number;
-  private readonly opts: RateLimitOptions;
-  private timer: Timer;
+  /** @internal */ public remaining: number;
+  /** @internal */ public readonly _maxMessages: number;
+  /** @internal */ public readonly _windowMs: number;
+  /** @internal */ public _nextReset: number;
 
   constructor(opts: RateLimitOptions) {
-    this.opts = opts;
+    this._maxMessages = opts.maxMessages;
+    this._windowMs = opts.windowMs;
     this.remaining = opts.maxMessages;
-    this.timer = setInterval(() => {
-      this.remaining = this.opts.maxMessages;
-    }, opts.windowMs);
+    this._nextReset = Date.now() + opts.windowMs;
+    activeLimiters.add(this);
+    startSharedTimer();
   }
 
   /**
@@ -38,9 +69,10 @@ export class RateLimiter {
   }
 
   /**
-   * Clears the internal reset timer. Call on socket close.
+   * Unregisters this limiter from the shared timer. Call on socket close.
    */
   destroy() {
-    clearInterval(this.timer);
+    activeLimiters.delete(this);
+    stopSharedTimerIfEmpty();
   }
 }

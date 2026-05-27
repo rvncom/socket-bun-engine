@@ -119,6 +119,19 @@ const engine = new Engine({
 });
 ```
 
+### `maxHandshakesPerIp`
+
+Default: `0` (unlimited)
+
+Maximum number of new handshakes per second from a single IP address. Excess receive HTTP 429. Combine with `maxHandshakesPerSecond` for layered protection — a single noisy IP can't exhaust the global budget for legitimate clients.
+
+```ts
+const engine = new Engine({
+  maxHandshakesPerSecond: 1000, // global
+  maxHandshakesPerIp: 20, // per-IP
+});
+```
+
 ### `backpressureThreshold`
 
 Default: `1048576` (1 MB)
@@ -285,6 +298,28 @@ Iterator over all connected `Socket` instances.
 ### `server.getSocket(id)`
 
 Look up a specific socket by session ID.
+
+### `server.use(middleware)`
+
+Registers a middleware function run on each handshake before `allowRequest`. Middlewares are invoked in registration order. Call `next()` to continue, or `next(err)` to reject the handshake with HTTP 403.
+
+```ts
+engine.use((req, server, next) => {
+  const token = new URL(req.url).searchParams.get("token");
+  if (!token) return next(new Error("missing token"));
+  // synchronous or async work, then continue
+  next();
+});
+
+engine.use(async (req, server, next) => {
+  await checkAuth(req);
+  next();
+});
+```
+
+### `socket.remoteAddress`
+
+Resolved client IP address (string) from `Bun.Server.requestIP()`. May be `undefined` if Bun can't resolve it (some proxy setups).
 
 ### `server.broadcast(data)`
 

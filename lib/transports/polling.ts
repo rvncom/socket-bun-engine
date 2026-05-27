@@ -71,11 +71,14 @@ export class Polling extends Transport {
       this.pollingPromise = { resolve, reject, responseHeaders, timeoutId };
 
       req.signal.addEventListener("abort", () => {
-        if (this.pollingPromise) {
-          clearTimeout(this.pollingPromise.timeoutId);
-          this.pollingPromise = undefined;
-          this.writable = false;
+        // Skip if the promise was already resolved by a write or timeout —
+        // otherwise we'd fire a second onError for an already-closed transport.
+        if (!this.pollingPromise) {
+          return;
         }
+        clearTimeout(this.pollingPromise.timeoutId);
+        this.pollingPromise = undefined;
+        this.writable = false;
         this.onError("polling request aborted");
       });
 

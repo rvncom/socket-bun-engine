@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.5
+
+### Bug Fixes
+
+- **ReadyState regression**: Fixed remaining string comparison `this.readyState !== "open"` in the WebSocket fast-path message handler — replaced with `ReadyState.OPEN` enum (missed in v1.1.4 sweep)
+- **Polling abort double-error**: Fixed race where an aborted polling request would emit `onError` twice if the request was already resolved by a write or timeout — abort handler now no-ops when `pollingPromise` is already cleared
+- **Metrics transport-count race**: Centralized polling/websocket count tracking — moved from `_attachMetricsListeners` (lazy) to a dedicated always-on `_attachTransportCounters` so counts stay accurate regardless of whether byte metrics are active
+
+### New Features
+
+- **`socket.remoteAddress`**: New public field exposing the resolved client IP from `Bun.Server.requestIP()` — enables IP-based logging, custom rate limiting, and Socket.IO `handshake.address` integration
+- **`maxHandshakesPerIp` option**: Per-IP handshake rate limit (sliding 1-second window) — protects against single-IP connection floods independently from the global `maxHandshakesPerSecond`. Excess requests receive HTTP 429
+- **`server.use(middleware)` chain**: Express-style middleware support — composable `(req, server, next)` functions invoked before `allowRequest`. Calling `next(err)` rejects the handshake with HTTP 403. New `Middleware` type exported
+
+### Performance
+
+- **Shared RateLimiter timer**: Replaced per-socket `setInterval` with a single global 25ms tick that drives all `RateLimiter` instances — at 10k connections this is 10k fewer active timers, dramatically reducing event loop overhead
+- **UTF-8-aware `byteSize()`**: `Buffer.byteLength()` now used for string size calculation — non-ASCII payloads (Cyrillic, emoji, CJK) report accurate byte counts instead of UTF-16 code units. Applied to per-socket metrics and server-level `bytesSent`/`bytesReceived` counters
+
 ## 1.1.4
 
 ### Bug Fixes

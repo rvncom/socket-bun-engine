@@ -96,6 +96,13 @@ export interface ServerOptions {
    */
   maxHandshakesPerSecond: number;
   /**
+   * Maximum number of new handshakes per second from a single IP address.
+   * Set to 0 to disable (default). Excess handshakes receive HTTP 429.
+   * Independent of `maxHandshakesPerSecond` — both can be configured together.
+   * @default 0
+   */
+  maxHandshakesPerIp: number;
+  /**
    * A function that receives a given handshake or upgrade request as its first parameter,
    * and can decide whether to continue or not.
    */
@@ -131,6 +138,16 @@ interface ConnectionError {
   message: string;
   context: Record<string, unknown>;
 }
+
+/**
+ * Express-style middleware run on each handshake before `allowRequest`.
+ * Call `next()` to continue, or `next(err)` to reject the handshake with HTTP 403.
+ */
+export type Middleware = (
+  req: Request,
+  server: Bun.Server<WebSocketData>,
+  next: (err?: Error) => void,
+) => void | Promise<void>;
 
 export interface DegradationEvent {
   active: boolean;
@@ -182,6 +199,8 @@ export class Server extends EventEmitter<
   private readonly _startTime = Date.now();
   private _handshakeTokens = 0;
   private _handshakeTimer?: Timer;
+  private readonly _ipHandshakeCounts = new Map<string, number>();
+  private readonly _middlewares: Middleware[] = [];
 
   public get clientsCount(): number {
     return this.clients.size;
@@ -227,6 +246,7 @@ export class Server extends EventEmitter<
         backpressureThreshold: 1_048_576,
         degradationThreshold: 0,
         maxHandshakesPerSecond: 0,
+        maxHandshakesPerIp: 0,
       },
       opts,
     );
@@ -261,13 +281,20 @@ export class Server extends EventEmitter<
     if (this.opts.maxHandshakesPerSecond < 0) {
       throw new RangeError("maxHandshakesPerSecond must be non-negative");
     }
+    if (this.opts.maxHandshakesPerIp < 0) {
+      throw new RangeError("maxHandshakesPerIp must be non-negative");
+    }
 
     this._metricsEnabled = this.opts.enableMetrics === true;
 
-    if (this.opts.maxHandshakesPerSecond > 0) {
+    if (
+      this.opts.maxHandshakesPerSecond > 0 ||
+      this.opts.maxHandshakesPerIp > 0
+    ) {
       this._handshakeTokens = this.opts.maxHandshakesPerSecond;
       this._handshakeTimer = setInterval(() => {
         this._handshakeTokens = this.opts.maxHandshakesPerSecond;
+        this._ipHandshakeCounts.clear();
       }, 1000);
     }
   }
@@ -280,7 +307,7 @@ export class Server extends EventEmitter<
     socket.on("data", (data) => {
       this._metrics.onBytesReceived(
         typeof data === "string"
-          ? data.length
+          ? Buffer.byteLength(data)
           : Buffer.isBuffer(data)
             ? data.byteLength
             : 0,
@@ -291,7 +318,7 @@ export class Server extends EventEmitter<
       if (packet.data != null) {
         this._metrics.onBytesSent(
           typeof packet.data === "string"
-            ? packet.data.length
+            ? Buffer.byteLength(packet.data)
             : Buffer.isBuffer(packet.data)
               ? packet.data.byteLength
               : 0,
@@ -304,10 +331,16 @@ export class Server extends EventEmitter<
         this._metrics.onRtt(socket.rtt);
       }
     });
+  }
 
+  /**
+   * Attaches lightweight transport-count tracking (always-on, independent of
+   * lazy byte metrics). A single upgrade listener is the only source-of-truth
+   * for polling→websocket transitions to avoid double-decrement races.
+   */
+  private _attachTransportCounters(socket: Socket) {
     socket.on("upgrade", () => {
       this._metrics.onUpgrade();
-      // Update transport counts: polling → websocket
       this._metrics.onPollingDisconnection();
       this._metrics.onWebSocketConnection();
     });
@@ -369,6 +402,28 @@ export class Server extends EventEmitter<
         status: 400,
         headers: responseHeaders,
       });
+    }
+
+    if (this._middlewares.length > 0) {
+      try {
+        await this._runMiddlewares(req, server);
+      } catch (reason) {
+        this.emitReserved("connection_error", {
+          req,
+          code: ERROR_CODES.FORBIDDEN,
+          message: ERROR_MESSAGES.get(ERROR_CODES.FORBIDDEN) ?? "Forbidden",
+          context: { message: (reason as Error)?.message ?? String(reason) },
+        });
+        const body = JSON.stringify({
+          code: ERROR_CODES.FORBIDDEN,
+          message: (reason as Error)?.message ?? String(reason),
+        });
+        responseHeaders.set("Content-Type", "application/json");
+        return new Response(body, {
+          status: 403,
+          headers: responseHeaders,
+        });
+      }
     }
 
     if (this.opts.allowRequest) {
@@ -550,6 +605,27 @@ export class Server extends EventEmitter<
         { status: 429, headers: responseHeaders },
       );
     }
+
+    const remoteIp =
+      this.opts.maxHandshakesPerIp > 0
+        ? server.requestIP(req)?.address
+        : undefined;
+    if (remoteIp) {
+      const ipCount = this._ipHandshakeCounts.get(remoteIp) ?? 0;
+      if (ipCount >= this.opts.maxHandshakesPerIp) {
+        this._metrics.onError();
+        responseHeaders.set("Retry-After", "1");
+        return new Response(
+          JSON.stringify({
+            code: ERROR_CODES.FORBIDDEN,
+            message: "Too many connections from this IP",
+          }),
+          { status: 429, headers: responseHeaders },
+        );
+      }
+      this._ipHandshakeCounts.set(remoteIp, ipCount + 1);
+    }
+
     if (this.opts.maxHandshakesPerSecond > 0) {
       this._handshakeTokens--;
     }
@@ -643,7 +719,14 @@ export class Server extends EventEmitter<
       },
     };
 
-    const socket = new Socket(id, socketOpts, transport, request);
+    const remoteAddress = server.requestIP(req)?.address;
+    const socket = new Socket(
+      id,
+      socketOpts,
+      transport,
+      request,
+      remoteAddress,
+    );
 
     this.clients.set(id, socket);
     this._metrics.onConnection();
@@ -656,6 +739,9 @@ export class Server extends EventEmitter<
     }
 
     this.updateDegradationState();
+
+    // Transport counts are always tracked (independent of lazy byte metrics).
+    this._attachTransportCounters(socket);
 
     if (this._metricsEnabled) {
       this._attachMetricsListeners(socket);
@@ -707,6 +793,41 @@ export class Server extends EventEmitter<
    */
   public get degraded(): boolean {
     return this._degraded;
+  }
+
+  /**
+   * Registers a middleware function run on each handshake before `allowRequest`.
+   * Middlewares are invoked in registration order. Call `next()` to continue,
+   * or `next(err)` to reject the handshake with HTTP 403.
+   */
+  public use(middleware: Middleware): this {
+    this._middlewares.push(middleware);
+    return this;
+  }
+
+  private _runMiddlewares(
+    req: Request,
+    server: Bun.Server<WebSocketData>,
+  ): Promise<void> {
+    if (this._middlewares.length === 0) return Promise.resolve();
+    const chain = this._middlewares;
+    return new Promise<void>((resolve, reject) => {
+      let i = 0;
+      const next = (err?: Error) => {
+        if (err) return reject(err);
+        if (i >= chain.length) return resolve();
+        const fn = chain[i++]!;
+        try {
+          const result = fn(req, server, next);
+          if (result && typeof (result as Promise<void>).catch === "function") {
+            (result as Promise<void>).catch(reject);
+          }
+        } catch (e) {
+          reject(e as Error);
+        }
+      };
+      next();
+    });
   }
 
   /**

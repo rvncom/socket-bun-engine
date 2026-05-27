@@ -7,7 +7,11 @@ export function generateId(): string {
   );
 }
 
-/** Returns the byte length of string or Buffer data. */
+/**
+ * Returns the UTF-8 byte length of string or Buffer data.
+ * For strings, uses Buffer.byteLength so non-ASCII characters (Cyrillic, emoji)
+ * are counted accurately rather than as UTF-16 code units.
+ */
 export function byteSize(data: string | Buffer): number {
-  return typeof data === "string" ? data.length : data.byteLength;
+  return typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
 }

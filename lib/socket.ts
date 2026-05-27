@@ -61,6 +61,8 @@ export class Socket extends EventEmitter<
   public readyState: ReadyState = ReadyState.OPENING;
   public transport: Transport;
   public readonly request: HandshakeRequestReference;
+  /** Remote client IP address (best-effort, undefined if not resolvable). */
+  public readonly remoteAddress?: string;
 
   private readonly opts: ServerOptions;
   private upgradeState: UpgradeState = "not_upgraded";
@@ -90,6 +92,7 @@ export class Socket extends EventEmitter<
     opts: ServerOptions,
     transport: Transport,
     req: HandshakeRequestReference,
+    remoteAddress?: string,
   ) {
     super();
 
@@ -100,6 +103,7 @@ export class Socket extends EventEmitter<
     this.bindTransport(transport);
 
     this.request = req;
+    this.remoteAddress = remoteAddress;
 
     if (opts.rateLimit) {
       this.rateLimiter = new RateLimiter(opts.rateLimit);
@@ -268,7 +272,7 @@ export class Socket extends EventEmitter<
     // Wire fast-path callback for WS message packets
     if (this._wsTransport) {
       this._wsTransport._onMessageFast = (data) => {
-        if (this.readyState !== "open") return;
+        if (this.readyState !== ReadyState.OPEN) return;
         if (this.rateLimiter && !this.rateLimiter.consume()) {
           debug("message dropped: rate limited");
           this.emitReserved("rateLimited");
